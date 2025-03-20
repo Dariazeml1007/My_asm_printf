@@ -4,6 +4,8 @@
 
 
 section .data
+    int_buffer_size equ 32
+    int_buffer times int_buffer_size db 0
     buffer_size equ 1024      ; buffer_size
     buffer times buffer_size db 0
     buffer_pos dd 0            ; position buffer
@@ -50,7 +52,9 @@ section .data
 section .text
     global my_printf
     extern reset_buffer
-
+;------------------------------------------------------------------------------------------------
+; Macro get argument from stack
+;-------------------------------------------------------------------------------------------------
 %macro GET_ARG 0
     movzx rax, byte [arg_counter]
     inc al
@@ -64,8 +68,9 @@ section .text
     add rbp, 8
 %%add_to_buf:
 %endmacro
+;-------------------------------------------------------------------------------------
 ; Macro add char to buf
-
+;------------------------------------------------------------------------------------
 %macro buffer_char 1
     mov ebx, [buffer_pos]
 
@@ -120,19 +125,21 @@ format_specifier:
 
     cmp al, '%'
     je case_per
-    sub al, 'a'
-    movzx rax, al
-    cmp rax, jump_table_size
+    mov bl, al
+    sub bl, 'a'
+    movzx rbx, bl
+    cmp rbx, jump_table_size
     jae case_def
 
-    lea rbx, [jump_table_format]
-    jmp [rbx + rax*8]
+    lea rcx, [jump_table_format]
+    jmp [rcx + rbx*8]
 
+;-------------------------------------------------------------------------------
 case_c:
     GET_ARG
     buffer_char cl
     jmp next_char
-
+;--------------------------------------------------------------------------------
 case_s:
     GET_ARG
     push rsi
@@ -150,6 +157,9 @@ case_s:
 
     call reset_buffer
     mov ebx, [buffer_pos]
+    cmp rcx, buffer_size
+    ja sys_call
+
 copy_str:
     mov rsi, rdi
     lea rdi, [buffer + ebx]
@@ -163,26 +173,59 @@ copy_str:
     pop rsi
     jmp next_char
 
+sys_call :
 
+    mov rsi, rdi             ; rsi = source
+    mov rdx, rcx             ; rdx = length
+    mov eax, 1               ; syscall: write
+    mov edi, 1               ; file descriptor: stdout
+    syscall
+    jmp next_char
+;--------------------------------------------------------------------------------
 case_d:
-     jmp next_char
 
+    GET_ARG
+    mov rax, rcx
+    mov rbx, 10
+    xor rcx, rcx
+
+    cmp rax, 0
+    jge convert_loop
+    neg rax
+    buffer_char '-'
+
+    convert_loop :
+        xor rdx, rdx
+        div rbx      ; Divide rax by 10 (result in rax, rest in rdx)
+        add dl, '0'
+        push rdx      ; save in stk (to get num in reverse order)
+        inc rcx
+        cmp rax, 1
+    jg convert_loop
+
+    write_digits:
+        pop rax
+        buffer_char al
+    loop write_digits
+
+    jmp next_char
+;--------------------------------------------------------------------------------
 case_x:
     jmp next_char
-
+;---------------------------------------------------------------------------------
 case_o:
     jmp next_char
-
+;--------------------------------------------------------------------------------
 case_per:
     buffer_char '%'
     jmp next_char
-
+;-----------------------------------------------------------------------------------
 case_def:
     buffer_char '%'
     buffer_char al             ; add to buf
     jmp next_char
 
-
+;--------------------------------------------------------------------------------------
 
 done:
     call reset_buffer

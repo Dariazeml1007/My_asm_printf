@@ -1,0 +1,26 @@
+     1                                  ;:================================================
+     2                                  ;: asm_printf.asm                    (c)Ded,2012
+     3                                  ;:================================================
+     4                                  
+     5                                  ; nasm + alink + WinAPI
+     6                                  
+     7                                  ; nasm    "asm_printf.asm" -f obj -l "asm_printf.lst"
+     8                                  ; alink   "asm_printf.obj" -oPE -c -subsys console
+     9                                  
+    10                                  
+    11                                  global MySumFunction
+    12                                  
+    13                                  section .code use32
+    14                                  
+    15                                  MySumFunction:  ; func get args from ecx, edx
+    16 00000000 5B                          pop ebx
+    17 00000001 59                          pop ecx
+    18 00000002 5A                          pop edx
+    19                                  
+    20 00000003 89C8                        mov   eax, ecx
+    21 00000005 01D0                        add   eax, edx
+    22                                  
+    23 00000007 53                          push ebx
+    24 00000008 C3                          ret              ; sum in eax
+    25                                  
+    26                                  
