@@ -180,48 +180,49 @@ case_c:
 ;-------------------------------------------------------------------------------
 
 case_s:
-    GET_ARG                  ; Get the string argument from stack/registers
-    push rsi                 ; Save registers we'll modify
+    GET_ARG                   ; Get string argument (pointer stored in RCX)
+    push rsi                  ; Preserve registers
     push rdi
 
-    mov rdi, rcx             ; rdi = pointer to source string
-    call strlen              ; Calculate string length (result in rax)
-    mov rcx, rax             ; Store length in rcx
+    ; Prepare for string length calculation
+    mov rdi, rcx             ; RDI = source string pointer
+    call strlen              ; Calculate length (RAX = length)
+    mov rcx, rax             ; Store length in RCX
 
-                            ; Check if string fits in buffer
-    mov rbx, [r8]            ; Get current buffer position
-    add rax, rbx             ; Calculate new position after adding string
-    cmp rax, buffer_size     ; Compare with buffer size
-    jbe copy_str             ; If fits, proceed to copy
+    ; Check if string fits in remaining buffer space
+    add rax, r8              ; RAX = potential new buffer position
+    cmp rax, buffer_size     ; Compare with buffer capacity
+    jbe copy_str             ; If fits, proceed with buffer copy
 
-                            ; Buffer overflow handling
+    ; Buffer overflow handling
     call reset_buffer        ; Flush current buffer contents
-    mov rbx, [r8]            ; Get buffer position (should be 0 after reset)
-    cmp rcx, buffer_size     ; Check if string is larger than buffer
-    ja sys_call              ; If too large, use direct syscall
 
-copy_str:                   ; Copy string to buffer
+    ; Check if string is larger than entire buffer
+    cmp rcx, buffer_size
+    ja sys_call              ; If too large, use syscall
 
-    mov rsi, rdi             ; rsi = source string pointer
-    lea rdi, [buffer + rbx]  ; rdi = destination in buffer
-    push rcx                 ; Save string length
+; Copy string to output buffer
+copy_str:
+    mov rsi, rdi             ; RSI = source string
+    lea rdi, [buffer + r8]   ; RDI = destination in buffer
+    push rcx                 ; Preserve string length
     rep movsb                ; Copy RCX bytes from RSI to RDI
 
     ; Update buffer position
     pop rcx                  ; Restore string length
-    add [r8], rcx            ; Increment buffer position by string length
-
+    add r8, rcx              ; Advance buffer position
     pop rdi                  ; Restore registers
     pop rsi
-    jmp next_char            ; Continue format string processing
+    jmp next_char            ; Continue format processing
 
+; Handle oversized string (larger than buffer)
 sys_call:
-    ; Handle oversized string - write directly to stdout
-    mov rsi, rdi             ; rsi = string pointer
-    mov rdx, rcx             ; rdx = string length
-    mov eax, 1               ; syscall number for write()
-    mov edi, 1               ; file 1 (stdout)
-    syscall
+    ; Direct write to stdout
+    mov rsi, rdi             ; RSI = string pointer (src for syscall)
+    mov rdx, rcx             ; RDX = length (arg for syscall)
+    mov eax, 1               ; Syscall number for write()
+    mov edi, 1               ; File descriptor 1 (stdout)
+    syscall                  ; Perform write operation
     jmp next_char
 ;--------------------------------------------------------------------------------
 ;Handle %d (integer) format specifier
