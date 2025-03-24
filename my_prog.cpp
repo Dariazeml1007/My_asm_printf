@@ -6,6 +6,6 @@ extern "C" void  my_printf(const char* format, ...);
 int main()
 {
     //  my_printf
-    my_printf("%d %d %c \n", (long long)-30, (long long)25, 's');
+    my_printf("%d %d %x \n",  (long long)7, (long long)-101, (long long)11);
     return 0;
 }
