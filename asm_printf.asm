@@ -90,6 +90,15 @@ section .text
 ;------------------------------------------------------------------------------------
 
 %macro  TRANSFER_FROM_BUFFER_INT_TO_BUFFER 1
+
+    mov rbx, %1
+    add rbx, r8
+    cmp rbx, buffer_size       ; Check if overflow
+
+    jbe %%skip_reset_
+    call reset_buffer
+
+%%skip_reset_:
     mov rsi, rdi             ; Start of num in buffer_int
     mov rdx,  %1             ; Length in rdx !
 
