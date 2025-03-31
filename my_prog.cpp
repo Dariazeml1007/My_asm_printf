@@ -6,6 +6,6 @@ extern "C" void  my_printf(const char* format, ...);
 int main()
 {
     //  my_printf
-    my_printf("%% %c %s %x %o %d %b \n", 'v', "abcd", (long long) 13, (long long) 8, (long long) 123, (long long) 5 );
+  printf("%d\n%d %s %x %d%%%c%b\n%d %s %x %d%%%c%b\n", (long long)-1,(long long) -1, "love", (long long)3802, (long long)100, (long long)33, (long long)127, (long long)1, "love", (long long)3802, (long long)100, (long long)33, (long long)127);
     return 0;
 }

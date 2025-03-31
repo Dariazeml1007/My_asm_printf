@@ -25,16 +25,21 @@ section .text
 
     ; Check if we've used all register arguments
     cmp al, 6
-    jae %%stk                     ; If >=6, get from stack
+    jae %%stk                       ; If >=6, get from stack
 
+    pop rax                         ; Save return address of func next_char
+    pop rbx
+    pop rcx                         ; Restore from saved register area
 
-    pop rcx                       ; Restore from saved register area
-    jmp %%add_to_buf              ; Skip stack handling
+    push rbx
+    push rax                        ; Restore return address
+
+    jmp %%add_to_buf                ; Skip stack handling
 
 %%stk:
     ; Get argument from stack
-    mov rcx, [rbp]                ; Read argument from stack frame
-    add rbp, 8                    ; Move stack pointer forward
+    mov rcx, [rbp]                  ; Read argument from stack frame
+    add rbp, 8                      ; Move stack pointer forward
 
 %%add_to_buf:
     ; Argument is now in RCX for use
@@ -43,7 +48,7 @@ section .text
 ; Macro add char to buf
 ;Entry: -
 ;Exit : -
-;Destr: -
+;Destr: - R8
 ;Calls:	reset_buffer
 ;------------------------------------------------------------------------------------
 %macro BUFFER_CHAR 1
@@ -61,23 +66,23 @@ section .text
 ;Macro to handle %o %x %b
 ;Entry: %1 - Bits per digit (1 for binary, 3 for octal, 4 for hexadecimal)
 ;Exit : -
-;Destr: -
+;Destr: - RAX RDI
 ;Calls:	convert_number_shift
 ;------------------------------------------------------------------------------------
 
 %macro ARGS_FOR_CONVERT 1
 
-    push rsi                    ; Preserve format string pointer
+    push rsi                        ; Preserve format string pointer
 
     ; Set up conversion arguments
-    mov rax, rcx                ; Move number to convert into RAX
-    mov cl, %1                  ; Set bits
-    lea rdi, [buffer_int + 31]  ; Point to end of 32-byte buffer
+    mov rax, rcx                    ; Move number to convert into RAX
+    mov cl, %1                      ; Set bits
+    lea rdi, [buffer_int + 31]      ; Point to end of 32-byte buffer
 
-    call convert_number_shift    ; Perform actual conversion
+    call convert_number_shift       ; Perform actual conversion
 
-    pop rsi                     ; Restore format string pointer
-    jmp next_char
+    pop rsi                         ; Restore format string pointer
+    ret
 
 %endmacro
 ;-------------------------------------------------------------------------------------
@@ -85,28 +90,28 @@ section .text
 ;Entry:  RDI - pointer on buffer_int
 ;        RCX - length to copy
 ;Exit :
-;Destr:
-;Calls:	convert_number_shift
+;Destr: RBX R8 RSI RDI
+;Calls:	reset_buffer
 ;------------------------------------------------------------------------------------
 
 %macro  TRANSFER_FROM_BUFFER_INT_TO_BUFFER 1
 
     mov rbx, %1
     add rbx, r8
-    cmp rbx, buffer_size       ; Check if overflow
+    cmp rbx, buffer_size            ; Check if overflow
 
     jbe %%skip_reset_
     call reset_buffer
 
 %%skip_reset_:
-    mov rsi, rdi             ; Start of num in buffer_int
-    mov rdx,  %1             ; Length in rdx !
+    mov rsi, rdi                    ; Start of num in buffer_int
+    mov rdx,  %1                    ; Length in rdx !
 
-    lea rdi, [buffer + r8]  ; Pointer on buffer
+    lea rdi, [buffer + r8]          ; Pointer on buffer
 
-    rep movsb               ; rcx = 0
+    rep movsb                       ; rcx = 0
 
-    add r8, rdx             ; New position in buf
+    add r8, rdx                     ; New position in buf
 
 %endmacro
 
@@ -114,35 +119,92 @@ section .text
 ;-----------------------------------------!!!!!!!!SECTION.MY_PRINTF!!!!!!!!!!------------------------------------
 ;================================================================================================================
 
+;-----------------------------------------------------------------------------------------------------
+;Printf (handle with %% %c %d %s %x %o %b)
+;Entry: None
+;Exit : None
+;Destr: None
+;Calls:	next_char, reset_buffer
+;----------------------------------------------------------------------------------------------------------
 my_printf:
 
     push rbp
     mov rbp, rsp
-    add rbp, 16                ; 16 - Skip return address and saved RBP
-
+    add rbp, 16                     ; 16 - Skip return address and saved RBP
 
     push r9
     push r8
-    push rcx                    ; Save argument registers
+    push rcx                        ; Save argument registers
     push rdx
     push rsi
 
-
     mov rsi, rdi                    ; RSI = format string pointer
     xor r8, r8                      ; Initialize buffer position to 0 (IMPORTANT to save)
+    call next_char
+
+
+    ; Flush any remaining data in output buffer
+    call reset_buffer               ; Write buffered content to stdout
+
+    ; Determine how many argument registers we need to restore
+    movzx rax, byte [arg_counter]   ; Load argument count (0-6)
+    cmp rax, 5                      ; Check if we used all register args
+    jae pop_5                       ; If >6 args, do full cleanup
+
+    ; Use jump table for efficient stack cleanup
+    lea rbx, [jump_table_pop]       ; Load address of pop table
+    jmp [rbx + rax*8]               ; Jump to appropriate cleanup routine
+
+pop_0:
+    pop rsi                         ; Restore 6th argument register
+pop_1:
+    pop rdx                         ; Restore 5th argument register
+pop_2:
+    pop rcx                         ; Restore 4th argument register
+pop_3:
+    pop r8                          ; Restore 3rd argument register
+pop_4:
+    pop r9                          ; Restore 2nd argument register
+pop_5:
+    pop rbp                         ; Restore frame pointer
+    ret
+
+;===============================================================================================================
+;---------------------------------------------SECTION.FUNCTIONS-----------------------------------------------
+;==============================================================================================================
+
+;-----------------------------------------------------------------------------------------------------
+;Next_char - process format string until the end
+;Entry: RSI = format string pointer
+;       R8  = 0
+;Exit : None
+;Destr: RAX RBX RCX RDX RSI RDI RBP R8
+;Calls:	format_specifier
+;----------------------------------------------------------------------------------------------------------
 
 ; Main format string processing loop
 next_char:
     lodsb                           ; Load next character into AL, increment RSI
     test al, al                     ; Check for null
-    jz end_printf                   ; If end of string, finish
+    jz .format_string_end                     ; If end of string, finish
 
     cmp al, '%'                     ; Check for format specifier
-    je format_specifier             ; Handle format specifier
+    jne .not_format
+    call format_specifier             ; Handle format specifier
 
-
+.not_format:
     BUFFER_CHAR al                  ; Regular character case
     jmp next_char
+.format_string_end:
+    ret
+
+;-----------------------------------------------------------------------------------------------------
+;Use jmp table to define what format is
+;Entry: al - pointer on '%'
+;Exit : None
+;Destr: RAX RBX RCX RDX RSI RDI RBP R8
+;Calls:	None
+;----------------------------------------------------------------------------------------------------------
 
 ; Format specifier handler (%x, %d, etc.)
 format_specifier:
@@ -164,229 +226,17 @@ format_specifier:
     jmp [rcx + rbx*8]
     jmp [rcx + rbx*8]               ; Jump to handler (each entry is 8 bytes)
 
-;=================================================================================================================
-;-----------------------------------------SECTION.MY_FORMATS-----------------------------------------------------
-;=================================================================================================================
-
-;-------------------------------------------------------------------------------
-;Handle %s (char) format specifier
-;Entry: -
-;Exit : -
-;Destr: -
-;Macros:GET_ARG, BUFFER_CHAR
-;-------------------------------------------------------------------------------
-case_c:
-    GET_ARG
-    BUFFER_CHAR cl
-    jmp next_char
-;--------------------------------------------------------------------------------
-;Handle %s (string) format specifier
-;Entry: -
-;Exit : -
-;Destr:  RAX RBX RCX
-;Calls : strlen, reset_buffer, syscall
-;Macros:GET_ARG
-;-------------------------------------------------------------------------------
-
-case_s:
-    GET_ARG                   ; Get string argument (pointer stored in RCX)
-    push rsi                  ; Preserve registers
-    push rdi
-
-    ; Prepare for string length calculation
-    mov rdi, rcx             ; RDI = source string pointer
-    call strlen              ; Calculate length (RAX = length)
-    mov rcx, rax             ; Store length in RCX
-
-    ; Check if string fits in remaining buffer space
-    add rax, r8              ; RAX = potential new buffer position
-    cmp rax, buffer_size     ; Compare with buffer capacity
-    jbe copy_str             ; If fits, proceed with buffer copy
-
-    ; Buffer overflow handling
-    call reset_buffer        ; Flush current buffer contents
-
-    ; Check if string is larger than entire buffer
-    cmp rcx, buffer_size
-    ja sys_call              ; If too large, use syscall
-
-; Copy string to output buffer
-copy_str:
-    mov rsi, rdi             ; RSI = source string
-    lea rdi, [buffer + r8]   ; RDI = destination in buffer
-    push rcx                 ; Preserve string length
-    rep movsb                ; Copy RCX bytes from RSI to RDI
-
-    ; Update buffer position
-    pop rcx                  ; Restore string length
-    add r8, rcx              ; Advance buffer position
-    pop rdi                  ; Restore registers
-    pop rsi
-    jmp next_char            ; Continue format processing
-
-; Handle oversized string (larger than buffer)
-sys_call:
-    ; Direct write to stdout
-    mov rsi, rdi             ; RSI = string pointer (src for syscall)
-    mov rdx, rcx             ; RDX = length (arg for syscall)
-    mov eax, 1               ; Syscall number for write()
-    mov edi, 1               ; File descriptor 1 (stdout)
-    syscall                  ; Perform write operation
-    jmp next_char
-;--------------------------------------------------------------------------------
-;Handle %d (integer) format specifier
-;Entry: -
-;Exit : -
-;Destr:  RAX RBX RCX RDX RDI
-;Calls : -
-;Macros:GET_ARG, BUFFER_CHAR
-;--------------------------------------------------------------------------------
-
-case_d:
-    GET_ARG                     ; Get the integer argument from stack/registers
-    push rsi                    ; Save RSI
-    mov rax, rcx                ; Move argument to RAX for div
-
-    xor rcx, rcx                ; Zeroing counter to 0
-    lea rdi, [buffer_int + 31]  ; Point to end of temporary buffer (32 bytes)
-    mov byte [rdi], 0           ; Null-terminate the buffer
-
-    mov rbx, 10                 ; Set divisor for base-10
-
-    ; Handle negative numbers
-    test rax, rax               ; Check sign flag
-    jns .convert_loop           ; Jump if positive
-    neg rax                     ; Make number positive
-    BUFFER_CHAR '-'             ; Write minus sign to buffer
-
-
-.convert_loop:
-    xor rdx, rdx                ; Clear dividend
-    div rbx                     ; RAX = result, RDX = remainder
-
-    lea rsi, [digits]           ; Load address of digits
-    mov dl, [rsi + rdx]         ; Convert remainder to ASCII
-
-    dec rdi                     ; Move buffer pointer
-    mov [rdi], dl               ; Load digit in buffer
-    inc rcx                     ; Increment digit counter
-
-    test rax, rax               ; Check if result is zero
-    jnz .convert_loop           ; Continue if more digits remain
-
-
-    TRANSFER_FROM_BUFFER_INT_TO_BUFFER rcx
-
-    pop rsi
-    jmp next_char
-;--------------------------------------------------------------------------------------------
-; Handle %o (octal) format specifier
-;Entry: -
-;Exit : -
-;Destr:  RAX RBX RCX RDX RDI
-;Calls : -
-;Macros:GET_ARG ARGS_FOR_CONVERT
-;-------------------------------------------------------------------------------------------
-case_o:
-
-    GET_ARG                      ; Get the octal argument from stack/registers
-
-    ARGS_FOR_CONVERT 3
-
-;-------------------------------------------------------------------------------
-; Handle %x (hex) format specifier
-;Entry: -
-;Exit : -
-;Destr:  RAX RBX RCX RDX RDI
-;Calls : -
-;Macros:GET_ARG ARGS_FOR_CONVERT
-;--------------------------------------------------------------------------------
-case_x:
-    GET_ARG                      ;Get the hex argument from stack/registers
-
-    ARGS_FOR_CONVERT 4
-
-;-------------------------------------------------------------------------------
-;Handle %b (binary) format specifier
-;Entry: -
-;Exit : -
-;Destr:  RAX RBX RCX RDX RDI
-;Calls : convert_number_shift
-;Macros:GET_ARG ARGS_FOR_CONVERT
-;--------------------------------------------------------------------------------
-case_b:
-    GET_ARG                      ;Get the binary argument from stack/registers
-
-    ARGS_FOR_CONVERT 1
-
-;-------------------------------------------------------------------------------
-;Handle %%
-;Entry: -
-;Exit : -
-;Destr: -
-;Calls : -
-;Macros: BUFFER_CHAR
-;--------------------------------------------------------------------------------
-case_per:
-    BUFFER_CHAR '%'             ; add to buffer symbol %
-    jmp next_char
-;-------------------------------------------------------------------------------
-;Handle % and not format symbol
-;Entry: -
-;Exit : -
-;Destr: -
-;Calls : -
-;Macros: BUFFER_CHAR
-;--------------------------------------------------------------------------------
-case_def:
-    BUFFER_CHAR '%'            ; add to buffer symbol %
-    BUFFER_CHAR al             ; add to buffer symbol after %
-    jmp next_char
-
-;===============================================================================================================
-;-------------------------------------------End of printf--------------------------------------------------------
-;================================================================================================================
-
-end_printf:
-    ; Flush any remaining data in output buffer
-    call reset_buffer          ; Write buffered content to stdout
-
-    ; Determine how many argument registers we need to restore
-    movzx rax, byte [arg_counter]   ; Load argument count (0-6)
-    cmp rax, 5                      ; Check if we used all register args
-    jae pop_5                       ; If >6 args, do full cleanup
-
-    ; Use jump table for efficient stack cleanup
-    lea rbx, [jump_table_pop] ; Load address of pop table
-    jmp [rbx + rax*8]         ; Jump to appropriate cleanup routine
-
-pop_0:
-    pop rsi                   ; Restore 6th argument register
-pop_1:
-    pop rdx                   ; Restore 5th argument register
-pop_2:
-    pop rcx                   ; Restore 4th argument register
-pop_3:
-    pop r8                    ; Restore 3rd argument register
-pop_4:
-    pop r9                    ; Restore 2nd argument register
-pop_5:
-    pop rbp                   ; Restore frame pointer
     ret
-
-
-;===============================================================================================================
-;---------------------------------------------SECTION.FUNCTIONS-----------------------------------------------
-;==============================================================================================================
-
 
 ;---------------------------------------------------------------------------
 ; Convert numbers
-;   RAX - num
-;   CL  - log2 (%o - 3, %x - 4, %b - 1)
-;   RDI - pointer on buf
-; Exit:
-;   RCX - amount of
+; Entry:  RAX - num
+;         CL  - log2 (%o - 3, %x - 4, %b - 1)
+;         RDI - pointer on buf
+;
+; Exit:   RCX - amount of symbols
+; Destr:  RAX RBX RCX RDX RSI RDI RBP R8
+; Calls:  None
 ;------------------------------------------------------------------------------------
 convert_number_shift:
     push r8                 ; Save buffer position
@@ -439,16 +289,193 @@ reset_buffer:
 ;Calls:	None
 ;-----------------------------------------------------------------------------------------
 strlen:
-    xor rax, rax                   ; Length counter
-    str_loop:
-        cmp byte [rcx + rax] , 0  ; If Null-terminate the string
-        je str_end                ; End if null
-        inc rax                   ; Else increase rax
-    jmp str_loop
-str_end:
-ret
-;------------------------------------------------------------------------------------------
+    xor rax, rax                     ; Length counter
+.str_loop:
+    cmp byte [rcx + rax] , 0         ; If Null-terminate the string
+    je .str_end                      ; End if null
+    inc rax                          ; Else increase rax
+    jmp .str_loop
+.str_end:
+    ret
 
+;=================================================================================================================
+;-----------------------------------------SECTION.MY_FORMATS-----------------------------------------------------
+;=================================================================================================================
+
+;-------------------------------------------------------------------------------
+;Handle %s (char) format specifier
+;Entry: -
+;Exit : -
+;Destr: -
+;Macros:GET_ARG, BUFFER_CHAR
+;-------------------------------------------------------------------------------
+case_c:
+    GET_ARG
+    BUFFER_CHAR cl
+    ret
+;--------------------------------------------------------------------------------
+;Handle %s (string) format specifier
+;Entry: -
+;Exit : -
+;Destr:  RAX RBX RCX
+;Calls : strlen, reset_buffer, syscall
+;Macros:GET_ARG
+;-------------------------------------------------------------------------------
+
+case_s:
+    GET_ARG                   ; Get string argument (pointer stored in RCX)
+    push rsi                  ; Preserve registers
+    push rdi
+
+    ; Prepare for string length calculation
+    mov rdi, rcx             ; RDI = source string pointer
+    call strlen              ; Calculate length (RAX = length)
+    mov rcx, rax             ; Store length in RCX
+
+    ; Check if string fits in remaining buffer space
+    add rax, r8              ; RAX = potential new buffer position
+    cmp rax, buffer_size     ; Compare with buffer capacity
+    jbe .copy_str             ; If fits, proceed with buffer copy
+
+    ; Buffer overflow handling
+    call reset_buffer        ; Flush current buffer contents
+
+    ; Check if string is larger than entire buffer
+    cmp rcx, buffer_size
+    ja .sys_call              ; If too large, use syscall
+
+; Copy string to output buffer
+.copy_str:
+    mov rsi, rdi             ; RSI = source string
+    lea rdi, [buffer + r8]   ; RDI = destination in buffer
+    push rcx                 ; Preserve string length
+    rep movsb                ; Copy RCX bytes from RSI to RDI
+
+    ; Update buffer position
+    pop rcx                  ; Restore string length
+    add r8, rcx              ; Advance buffer position
+    pop rdi                  ; Restore registers
+    pop rsi
+    ret            ; Continue format processing
+
+; Handle oversized string (larger than buffer)
+.sys_call:
+    ; Direct write to stdout
+    mov rsi, rdi             ; RSI = string pointer (src for syscall)
+    mov rdx, rcx             ; RDX = length (arg for syscall)
+    mov eax, 1               ; Syscall number for write()
+    mov edi, 1               ; File descriptor 1 (stdout)
+    syscall                  ; Perform write operation
+    ret
+;--------------------------------------------------------------------------------
+;Handle %d (integer) format specifier
+;Entry: -
+;Exit : -
+;Destr:  RAX RBX RCX RDX RDI
+;Calls : -
+;Macros:GET_ARG, BUFFER_CHAR
+;--------------------------------------------------------------------------------
+
+case_d:
+    GET_ARG                     ; Get the integer argument from stack/registers
+    push rsi                    ; Save RSI
+    mov rax, rcx                ; Move argument to RAX for div
+
+    xor rcx, rcx                ; Zeroing counter to 0
+    lea rdi, [buffer_int + 31]  ; Point to end of temporary buffer (32 bytes)
+    mov byte [rdi], 0           ; Null-terminate the buffer
+
+    mov rbx, 10                 ; Set divisor for base-10
+
+    ; Handle negative numbers
+    test rax, rax               ; Check sign flag
+    jns .convert_loop           ; Jump if positive
+    neg rax                     ; Make number positive
+    BUFFER_CHAR '-'             ; Write minus sign to buffer
+
+
+.convert_loop:
+    xor rdx, rdx                ; Clear dividend
+    div rbx                     ; RAX = result, RDX = remainder
+
+    lea rsi, [digits]           ; Load address of digits
+    mov dl, [rsi + rdx]         ; Convert remainder to ASCII
+
+    dec rdi                     ; Move buffer pointer
+    mov [rdi], dl               ; Load digit in buffer
+    inc rcx                     ; Increment digit counter
+
+    test rax, rax               ; Check if result is zero
+    jnz .convert_loop           ; Continue if more digits remain
+
+
+    TRANSFER_FROM_BUFFER_INT_TO_BUFFER rcx
+
+    pop rsi
+    ret
+;--------------------------------------------------------------------------------------------
+;Handle %o (octal) format specifier
+;Entry: -
+;Exit : -
+;Destr:  RAX RBX RCX RDX RDI
+;Calls : -
+;Macros:GET_ARG ARGS_FOR_CONVERT
+;-------------------------------------------------------------------------------------------
+case_o:
+
+    GET_ARG                      ; Get the octal argument from stack/registers
+
+    ARGS_FOR_CONVERT 3
+
+;-------------------------------------------------------------------------------
+;Handle %x (hex) format specifier
+;Entry: -
+;Exit : -
+;Destr:  RAX RBX RCX RDX RDI
+;Calls : -
+;Macros:GET_ARG ARGS_FOR_CONVERT
+;--------------------------------------------------------------------------------
+case_x:
+    GET_ARG                      ;Get the hex argument from stack/registers
+
+    ARGS_FOR_CONVERT 4
+
+;-------------------------------------------------------------------------------
+;Handle %b (binary) format specifier
+;Entry: -
+;Exit : -
+;Destr:  RAX RBX RCX RDX RDI
+;Calls : convert_number_shift
+;Macros:GET_ARG ARGS_FOR_CONVERT
+;--------------------------------------------------------------------------------
+case_b:
+    GET_ARG                      ;Get the binary argument from stack/registers
+
+    ARGS_FOR_CONVERT 1
+
+;-------------------------------------------------------------------------------
+;Handle %%
+;Entry: -
+;Exit : -
+;Destr: -
+;Calls : -
+;Macros: BUFFER_CHAR
+;--------------------------------------------------------------------------------
+case_per:
+    BUFFER_CHAR '%'             ; add to buffer symbol %
+    ret
+;-------------------------------------------------------------------------------
+;Handle % and not format symbol
+;Entry: -
+;Exit : -
+;Destr: -
+;Calls : -
+;Macros: BUFFER_CHAR
+;--------------------------------------------------------------------------------
+case_def:
+    BUFFER_CHAR '%'            ; add to buffer symbol %
+    BUFFER_CHAR al             ; add to buffer symbol after %
+    ret
 
 
 
@@ -507,4 +534,4 @@ section .data
 
     arg_counter db 0              ; amount of arguments in printf
 
-section .note.GNU-stack noalloc noexec nowrite progbits
+section .note.GNU-stack noalloc noexec nowrite progbits ; it is for not save machine code in stack
